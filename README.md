@@ -82,8 +82,8 @@ Nothing is translated or summarised.
 ## Licence / copyright
 
 These are official legislative texts of the Republic of Iraq, published by the Higher Judicial
-Council for public information. Iraqi copyright law (Law 3 of 1971, as amended) excludes
-official texts such as laws and judicial decisions from protection.
+Council for public information. Official legislative texts are generally not subject to
+copyright, and they are reproduced unchanged.
 
 ## Regenerate
 
