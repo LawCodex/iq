@@ -11,6 +11,8 @@ import re
 import sys
 from datetime import date
 
+import html as html_mod
+
 import yaml
 from bs4 import BeautifulSoup, NavigableString
 
@@ -85,23 +87,28 @@ def page_count(soup):
     return max(nums) if nums else 1
 
 
-def parse_body(soup):
-    lab = soup.find(id="Label2")
-    if lab is None:
+def parse_body(h):
+    """Regex-based: the page HTML nests unclosed <p>/<html>/<body> tags, which HTML parsers
+    re-nest in ways that lose text, so the Label2 block is processed as a flat string."""
+    i = h.find('<span id="Label2"')
+    if i < 0:
         return None
-    for a in lab.find_all("a"):
-        if "VerdictsLstResults" in (a.get("href") or ""):
-            a.decompose()
-    for p in lab.find_all("p", id="ddd2"):
-        p.replace_with(NavigableString("\n\x01H" + norm(p.get_text(" ")) + "\n"))
-    for p in lab.find_all("p", id="ddd"):
-        p.replace_with(NavigableString("\n\x01A" + norm(p.get_text(" ")) + "\n"))
-    for br in lab.find_all("br"):
-        br.replace_with(NavigableString("\n"))
-    for t in lab.find_all(["p", "div", "tr"]):
-        t.insert_after(NavigableString("\n"))
-    text = lab.get_text("")
-    blocks = []  # (kind, text)
+    j = h.find('<div class="wrapper col6"', i)
+    seg = h[i:j if j > 0 else len(h)]
+    seg = re.sub(r"(?is)<a[^>]*VerdictsLstResults[^>]*>.*?</a>", "", seg)
+    seg = re.sub(r"(?is)<(script|style|title)[^>]*>.*?</\1>", "", seg)
+
+    def mark(tag):
+        def f(m):
+            t = norm(html_mod.unescape(re.sub(r"<[^>]+>", " ", m.group(1))))
+            return "\n\x01" + tag + re.sub(r"\s+", " ", t) + "\n"
+        return f
+    seg = re.sub(r"(?is)<p\s+id=['\"]ddd2['\"][^>]*>(.*?)</p>", mark("H"), seg)
+    seg = re.sub(r"(?is)<p\s+id=['\"]ddd['\"][^>]*>(.*?)</p>", mark("A"), seg)
+    seg = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|<p\b[^>]*>", "\n", seg)
+    seg = re.sub(r"<[^>]+>", "", seg)
+    text = html_mod.unescape(seg)
+    blocks = []
     for ln in text.split("\n"):
         ln = norm(ln)
         if not ln:
@@ -113,6 +120,44 @@ def parse_body(soup):
         else:
             blocks.append(("T", ln))
     return blocks
+
+
+def split_articles(bl):
+    """Return list of (start, end) index ranges of article groups starting at an 'A' block."""
+    idx = [k for k, (kind, _) in enumerate(bl) if kind == "A"]
+    out = []
+    for n, k in enumerate(idx):
+        e = idx[n + 1] if n + 1 < len(idx) else len(bl)
+        e2 = next((m for m in range(k + 1, e) if bl[m][0] == "H"), e)
+        out.append((k, e2))
+    return out
+
+
+def dedupe_boundary(acc, new):
+    """Consecutive pages repeat the article at the page boundary: drop the repeat
+    (keeping whichever copy is longer)."""
+    if not acc or not new:
+        return new
+    a_acc = split_articles(acc)
+    a_new = split_articles(new)
+    if not a_acc or not a_new:
+        return new
+    s0, e0 = a_acc[-1]
+    s1, e1 = a_new[0]
+    lead = new[:s1]
+    if acc[s0][1] != new[s1][1] or e0 != len(acc):
+        return new
+    if lead:
+        if not all(k == "H" for k, _ in lead) or acc[s0 - len(lead):s0] != lead:
+            return new
+        s1 = 0
+        s0 -= len(lead)
+    old_txt = sum(len(t) for _, t in acc[s0:e0])
+    new_txt = sum(len(t) for _, t in new[s1:e1])
+    if new_txt > old_txt:
+        del acc[s0:e0]
+        return new
+    return new[:s1] + new[e1:]
 
 
 ENUM_RE = re.compile(r"^(?:\(?[0-9٠-٩]+\s*[-\)\.–]|\(?[أ-ي]{1,2}\s*[-\)\.–‌]|[-•*]\s)")
@@ -189,12 +234,12 @@ def main():
         blocks, missing = [], []
         for i in range(1, n + 1):
             fn = pages[sc].get(i)
-            b = parse_body(BeautifulSoup(load(fn), "html.parser")) if fn else None
+            b = parse_body(load(fn)) if fn else None
             if b is None:
                 missing.append(i)
                 blocks.append(("T", f"*[الصفحة {i} من {n} من هذا التشريع غير متوفرة في النسخة المؤرشفة]*"))
                 continue
-            blocks.extend(b)
+            blocks.extend(dedupe_boundary(blocks, b))
         if not any(k == "T" for k, _ in blocks):
             report["skipped"].append([sc, "empty body"])
             continue
